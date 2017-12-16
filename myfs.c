@@ -86,7 +86,7 @@ struct opentable {
 		int size;        // keep up to date with fcb
 		BLOCKTYPE start, // starting block
 		          curr;  // current block
-	} entries[MAXFILECOUNT];
+	} entries[MAXOPENFILES];
 	int filenum; // no of open files
 	int minfree; // smallest free index in table, -1 if full, may be updated after opening or closing files
 } opentable;
