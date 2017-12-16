@@ -3,7 +3,7 @@
 
 #define BLOCKSIZE          4096     // bytes
 #define MAXFILECOUNT       128      // files
-#define DISKSIZE         (1<<27)  // 256 MB
+#define DISKSIZE         (1<<27)  // 128 MB
 #define MAXFILENAMESIZE    32  // characters - max that FS can support
 #define BLOCKCOUNT      (DISKSIZE / BLOCKSIZE)
 #define MAXOPENFILES       64      // files
