@@ -19,10 +19,12 @@ int  disk_blockcount;  // block count on disk
  * - Superblock contains above global variables, apart from disk_fd, also links to FAT, free blocks, etc.
  * - Directory structure implemented as sorted dynamic array of maximum size 128
  *   32K total blocks in disk, give 15 bits; represent block number by 16 bits
- *   128 * (32 + 2) = 2 blocks for directory entry
+ *   128 * (32 + 2) < 2 blocks for directory entry
  * - FCBs contain file size (hence number of blocks) and list of blocks used, may reference FAT
- *   128 blocks for FCBs, 32K * 2 bytes = 64 KB = 16 blocks for FAT
- *   FAT may also record allocated metadata blocks, in order to find free space to allocate FCBs etc.
+ *   Kept in separate table for easy reference by FAT and open file table
+ *   Each reference contains 6 bytes for FCB and 1 byte for valid/invalid, FCB table plus directory table have
+ *   128 * (32 + 2 + 7) + 4 < 2 blocks
+ * - FAT may also record allocated metadata blocks, in order to find free space to allocate FCBs etc.
  *   Otherwise, FAT only needs to record 3/4 of 32K, reducing its size to 12 blocks
  *
  * In memory:
@@ -44,31 +46,16 @@ int  disk_blockcount;  // block count on disk
 
 // TODO move to separate files
 
-// which integer type is used to denote block numbers
-#define BLOCKTYPE uint16_t
+#include "dir.h"
 
-struct dir {
-	struct dir_entry {
-		char filename[MAXFILENAMESIZE];
-		BLOCKTYPE inum; // block index of fcb
-	} entries[MAXFILECOUNT];
-	int filenum;
-} dir;
+struct superblock {
+	char disk_name[128];
+	int disk_size;
+	int disk_blockcount;
+	// TODO need not be kept
+} superblock;
 
-// may be inside dir entry; searching filename in dir shouldn't be a big issue with binary search
-struct inode {
-	int size;
-	int start; // index of first data block
-};
-
-struct inodes {
-	struct ientry {
-		int valid;
-		struct inode inode;
-	} entries[MAXFILECOUNT];
-	int filenum;
-	int minfree;
-} inodes;
+struct dir dir;
 
 struct fat {
 	BLOCKTYPE table[BLOCKCOUNT];
@@ -81,7 +68,7 @@ struct opentable {
 	struct open_entry {
 		int valid; // whether entry represents valid file or not; need indices not to change
 		char filename[MAXFILENAMESIZE]; // search through dir
-		// BLOCKTYPE inum;  // block no of fcb
+		BLOCKTYPE inum;  // index of fcb
 		int offset;
 		int size;        // keep up to date with fcb
 		BLOCKTYPE start, // starting block
@@ -158,8 +145,10 @@ int myfs_diskcreate (char *vdisk)
 	char buf[BLOCKSIZE];
 
 	// create new file with size DISKSIZE
-	if (open(vdisk, O_RDWR | O_CREAT, 0666) == -1)
-		return -1;
+	if (open(vdisk, O_RDWR | O_CREAT, 0666) == -1) {
+		printf("disk create error %s\n", vdisk);
+		exit(1);
+	}
 
 	// fill disk with zeros
 	bzero((void *) buf, BLOCKSIZE);
@@ -191,6 +180,7 @@ int myfs_makefs(char *vdisk)
 
 	// perform your format operations here.
 	printf ("formatting disk=%s, size=%d\n", vdisk, disk_size);
+	// TODO
 
 	fsync (disk_fd);
 	close (disk_fd);
@@ -227,12 +217,33 @@ int myfs_mount (char *vdisk)
 
 	// perform your mount operations here
 
-	// write your code
+	// allocate temporary buffer the size of 1 block, for better copying
+	char *buf = malloc(BLOCKSIZE);
 
-	/* you can place these returns wherever you want. Below
-	   we put them at the end of functions so that compiler will not
-	   complain.
-        */
+	// read superblock into buffer
+	if (getblock(0, buf)) {
+		printf("could not read superblock\n");
+		return -1;
+	}
+	memcpy(&superblock, buf, sizeof(struct superblock)); // assuming sizeof superblock < BLOCKSIZE
+
+	// copy elements of superblock into memory, or simply read global variables from buffer directly
+
+	// read directory, assuming its size is a little over 1 block
+	if (getblock(1, &dir) || getblock(2, buf)) {
+		printf("could not read directory table\n");
+		return -1;
+	}
+	memcpy(((char *) &dir) + BLOCKSIZE, buf, sizeof(struct dir) - BLOCKSIZE);
+
+	// read FAT, assuming it is 16 blocks
+	for (int i = 0; i < sizeof(struct fat) / BLOCKSIZE; ++i) {
+		if (getblock(2 + i, ((char *) &fat) + i * BLOCKSIZE)) {
+			printf("could not read FAT\n");
+			return -1;
+		}
+	}
+
   	return (0);
 }
 
@@ -252,15 +263,11 @@ int myfs_umount()
 /* create a file with name filename */
 int myfs_create(char *filename)
 {
-	// if cannot create new file
-	if (dir.filenum == MAXFILECOUNT)
+	// retrieve new FCB
+	int inum = dir_add(dir, filename);
+	if (inum == -1) // file already exists
 		return -1;
-
-	// TODO search through dir
-	// if file already exists, don't add
-	// else create new directory entry, initialize size = 0, no data blocks (start = 0, but doesn't matter)
-	// TODO
-
+	printf("created file %s with fcb index %d\n", filename, inum);
 	return (0);
 }
 
@@ -269,11 +276,23 @@ int myfs_create(char *filename)
 int myfs_open(char *filename)
 {
 	int index = -1;
+	int inum = dir_get(dir, filename);
 
 	// binary search through dir
 	// if not found return index
 	// else create new open file table entry
 	// copy size and start from dir entry, curr = start, offset = 0
+	if (inum == -1) {
+		printf("file %s does not exist\n", filename);
+		return -1;
+	}
+
+	// create new open file table entry for index
+	index = open_add(open, filename, inum); // TODO add function
+	if (index == -1) {
+		printf("cannot open file %s\n", filename);
+		return -1;
+	}
 
 	return (index);
 }
@@ -284,15 +303,36 @@ int myfs_close(int fd)
 	// check if open first
 	// write cached blocks of file into disk, if any
 	// remove from open file table
+	// TODO write as member function for open
 
 	return (0);
 }
 
 int myfs_delete(char *filename)
 {
-	// first check if open
+	struct inode inode;
+
+	// retrieve file, checking if it actually exists
+	// then remove it from directory entry and read its inode
+	int inum = dir_remove(dir, filename, &inode);
+	if (inum == -1) {
+		printf("file %s does not exist\n", filename);
+		return -1;
+	}
+
+	// TODO first check if open
+
 	// deallocate data blocks in order
+	BLOCKTYPE i = inode.start, j;
+	while (fat.table[i] != 0) {
+		j = fat.table[i];
+		fat.table[i] = 0; // is more needed for deallocation?
+		i = j;
+	}
+
 	// then remove directory entry etc.
+	// already done in beginning
+
 	// write to disk if blocks cached
 
 	return (0);
