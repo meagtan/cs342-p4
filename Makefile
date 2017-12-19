@@ -2,9 +2,9 @@
 
 all:  libmyfs.a  app createdisk formatdisk
 
-libmyfs.a:  	myfs.c
-	gcc -Wall -c myfs.c
-	ar -cvq  libmyfs.a myfs.o
+libmyfs.a:  	myfs.c dir.c opentable.c
+	gcc -Wall -c myfs.c dir.c opentable.c
+	ar -cvq  libmyfs.a myfs.o dir.o opentable.o
 	ranlib libmyfs.a
 
 app: 	app.c

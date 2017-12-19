@@ -43,11 +43,19 @@ int dir_add(struct dir *dir, char *filename)
 	strcpy(dir->entries[k].filename, filename);
 
 	// find free entry in FCB table
-	for (i = 0; !dir->fcbs[i].valid; ++i);
+	i = dir->minfree;
 
 	// initialize FCB
+	dir->fcbs[i].valid = 1;
 	dir->entries[k].inum = i;
-	fcbs[i].inode.size = fcbs[i].inode.start = 0;
+	dir->fcbs[i].inode.size = dir->fcbs[i].inode.start = 0;
+
+	dir->filenum++;
+	dir->minfree++;
+	while (dir->minfree != i && dir->fcbs[dir->minfree].valid)
+		dir->minfree = (dir->minfree + 1) % MAXFILECOUNT;
+	if (dir->minfree == i)
+		dir->minfree = -1;
 
 	return k;
 }
@@ -66,7 +74,11 @@ int dir_remove(struct dir *dir, char *filename, struct inode *inode)
 	for (; i < dir->filenum - 1; ++i)
 		dir->entries[i] = dir->entries[i+1];
 
-	return dir->inum;
+	dir->filenum--;
+	if (dir->minfree == -1 || inum < dir->minfree)
+		dir->minfree = inum;
+
+	return inum;
 }
 
 int getindex(struct dir *dir, char *filename)

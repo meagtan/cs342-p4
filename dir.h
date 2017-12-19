@@ -1,17 +1,20 @@
-#include <stdint.h>
-
-#include "myfs.h"
-
 /*
  * Auxiliary functions for directory table
  */
+
+#ifndef __DIR_H
+#define __DIR_H
+
+#include <stdint.h>
+
+#include "myfs.h"
 
 #define BLOCKTYPE uint16_t
 
 struct dir {
 	struct dir_entry {
 		char filename[MAXFILENAMESIZE];
-		int inum; // index of fcb in table // TODO BLOCKTYPE defined in myfs.c
+		int inum; // index of fcb in table
 	} entries[MAXFILECOUNT];
 	struct fcb_entry {
 		uint8_t valid;
@@ -21,6 +24,7 @@ struct dir {
 		} inode;
 	} fcbs[MAXFILECOUNT];
 	int filenum;
+	int minfree; // first available fcb
 };
 
 
@@ -34,4 +38,6 @@ int dir_get(struct dir *, char *filename);
 int dir_add(struct dir *, char *filename);
 
 // doesn't delete blocks, does invalidate fcb
-int dir_remove(struct dir *, char *filename);
+int dir_remove(struct dir *, char *filename, struct inode *inode);
+
+#endif

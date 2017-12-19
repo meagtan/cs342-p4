@@ -47,6 +47,7 @@ int  disk_blockcount;  // block count on disk
 // TODO move to separate files
 
 #include "dir.h"
+#include "opentable.h"
 
 struct superblock {
 	char disk_name[128];
@@ -57,11 +58,14 @@ struct superblock {
 
 struct dir dir;
 
+struct opentable opentable;
+
 struct fat {
 	BLOCKTYPE table[BLOCKCOUNT];
 	// anything else?
 } fat;
 
+/*
 // may implement linked list structure here, each directory entry may link to first open file entry
 // and open file entries may link to the next entry or -1
 struct opentable {
@@ -76,9 +80,15 @@ struct opentable {
 	} entries[MAXOPENFILES];
 	int filenum; // no of open files
 	int minfree; // smallest free index in table, -1 if full, may be updated after opening or closing files
-} opentable;
+} open;
+*/
 
-
+/*
+open_add(open, filename, inum);
+open_close(
+open_isopen
+open_get
+*/
 
 /*
    Reads block blocknum into buffer buf.
@@ -223,6 +233,7 @@ int myfs_mount (char *vdisk)
 	// read superblock into buffer
 	if (getblock(0, buf)) {
 		printf("could not read superblock\n");
+		free(buf);
 		return -1;
 	}
 	memcpy(&superblock, buf, sizeof(struct superblock)); // assuming sizeof superblock < BLOCKSIZE
@@ -232,6 +243,7 @@ int myfs_mount (char *vdisk)
 	// read directory, assuming its size is a little over 1 block
 	if (getblock(1, &dir) || getblock(2, buf)) {
 		printf("could not read directory table\n");
+		free(buf);
 		return -1;
 	}
 	memcpy(((char *) &dir) + BLOCKSIZE, buf, sizeof(struct dir) - BLOCKSIZE);
@@ -240,10 +252,15 @@ int myfs_mount (char *vdisk)
 	for (int i = 0; i < sizeof(struct fat) / BLOCKSIZE; ++i) {
 		if (getblock(2 + i, ((char *) &fat) + i * BLOCKSIZE)) {
 			printf("could not read FAT\n");
+			free(buf);
 			return -1;
 		}
 	}
 
+	// initialize open file table
+	open_init(&opentable);
+
+	free(buf);
   	return (0);
 }
 
@@ -252,7 +269,35 @@ int myfs_umount()
 {
 	// perform your unmount operations here
 
-	// write your code
+	char *buf = malloc(BLOCKSIZE);
+
+	// copy elements of superblock from memory, or simply read global variables from buffer directly
+
+	// write superblock into buffer
+	memcpy(buf, &superblock, sizeof(struct superblock));
+	if (putblock(0, buf)) {
+		printf("could not write superblock\n");
+		free(buf);
+		return -1;
+	}
+
+	// write directory, assuming its size is a little over 1 block
+	memcpy(buf, ((char *) &dir) + BLOCKSIZE, sizeof(struct dir) - BLOCKSIZE); // should not wiping buffer here matter?
+	if (putblock(1, &dir) || putblock(2, buf)) {
+		printf("could not write directory table\n");
+		free(buf);
+		return -1;
+	}
+
+	free(buf);
+
+	// write FAT, assuming it is 16 blocks
+	for (int i = 0; i < sizeof(struct fat) / BLOCKSIZE; ++i) {
+		if (putblock(2 + i, ((char *) &fat) + i * BLOCKSIZE)) {
+			printf("could not write FAT\n");
+			return -1;
+		}
+	}
 
 	fsync (disk_fd);
 	close (disk_fd);
@@ -264,7 +309,7 @@ int myfs_umount()
 int myfs_create(char *filename)
 {
 	// retrieve new FCB
-	int inum = dir_add(dir, filename);
+	int inum = dir_add(&dir, filename);
 	if (inum == -1) // file already exists
 		return -1;
 	printf("created file %s with fcb index %d\n", filename, inum);
@@ -276,7 +321,7 @@ int myfs_create(char *filename)
 int myfs_open(char *filename)
 {
 	int index = -1;
-	int inum = dir_get(dir, filename);
+	int inum = dir_get(&dir, filename);
 
 	// binary search through dir
 	// if not found return index
@@ -288,7 +333,7 @@ int myfs_open(char *filename)
 	}
 
 	// create new open file table entry for index
-	index = open_add(open, filename, inum); // TODO add function
+	index = open_add(&opentable, filename, inum, &dir); // TODO add function
 	if (index == -1) {
 		printf("cannot open file %s\n", filename);
 		return -1;
@@ -304,23 +349,26 @@ int myfs_close(int fd)
 	// write cached blocks of file into disk, if any
 	// remove from open file table
 	// TODO write as member function for open
-
-	return (0);
+	return open_close(&opentable, fd);
 }
 
 int myfs_delete(char *filename)
 {
 	struct inode inode;
 
+	// TODO first check if open
+	if (open_isopen(&opentable, filename)) {
+		printf("file %s is open\n", filename);
+		return -1;
+	}
+
 	// retrieve file, checking if it actually exists
 	// then remove it from directory entry and read its inode
-	int inum = dir_remove(dir, filename, &inode);
+	int inum = dir_remove(&dir, filename, &inode);
 	if (inum == -1) {
 		printf("file %s does not exist\n", filename);
 		return -1;
 	}
-
-	// TODO first check if open
 
 	// deallocate data blocks in order
 	BLOCKTYPE i = inode.start, j;
@@ -343,7 +391,13 @@ int myfs_read(int fd, void *buf, int n)
 	int bytes_read = -1;
 
 	// check if file open
+	struct open_entry *entry = open_get(&opentable, fd);
+
+	if (entry == NULL)
+		return bytes_read;
+
 	// retrieve current block
+	
 	// read byte by byte until offset == size or bytes_read == n
 	// if current block changes (size / BLOCKSIZE), retrieve new block and update curr
 
