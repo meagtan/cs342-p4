@@ -25,7 +25,7 @@ int  disk_blockcount;  // block count on disk
  *   Each reference contains 6 bytes for FCB and 1 byte for valid/invalid, FCB table plus directory table have
  *   128 * (32 + 2 + 7) + 4 < 2 blocks
  * - FAT may also record allocated metadata blocks, in order to find free space to allocate FCBs etc.
- *   Otherwise, FAT only needs to record 3/4 of 32K, reducing its size to 12 blocks
+ *   Otherwise, FAT only needs to record 3/4 of 32K block numbers, reducing its size to 12 blocks
  *
  * In memory:
  * - Cached copies of superblock, directory entries, FCBs (as necessary; allocated on heap), FAT
@@ -44,7 +44,6 @@ int  disk_blockcount;  // block count on disk
  * Seek to offset: change offset and also current block
  */
 
-// TODO move to separate files
 
 #include "dir.h"
 #include "opentable.h"
@@ -60,12 +59,16 @@ struct dir dir;
 
 struct opentable opentable;
 
+// TODO implement, read FAT from disk onto buffer
+BLOCKTYPE fat_getnext(BLOCKTYPE blk);
+BLOCKTYPE fat_setnext(BLOCKTYPE blk); // finds and sets next block for blk (0 represents new file), if none available returns 0
+
+/*
 struct fat {
 	BLOCKTYPE table[BLOCKCOUNT];
 	// anything else?
 } fat;
 
-/*
 // may implement linked list structure here, each directory entry may link to first open file entry
 // and open file entries may link to the next entry or -1
 struct opentable {
@@ -390,27 +393,89 @@ int myfs_read(int fd, void *buf, int n)
 {
 	int bytes_read = -1;
 
+	if (n > MAXREADWRITE)
+		return bytes_read;
+
 	// check if file open
 	struct open_entry *entry = open_get(&opentable, fd);
 
-	if (entry == NULL)
+	if (entry == NULL || entry->size == 0) // empty file
 		return bytes_read;
 
 	// retrieve current block
-	
 	// read byte by byte until offset == size or bytes_read == n
 	// if current block changes (size / BLOCKSIZE), retrieve new block and update curr
 
-	return (bytes_read);
+	char *blockbuf = malloc(BLOCKSIZE);
+
+	if (getblock(entry->curr, blockbuf)) {
+		free(blockbuf);
+		return bytes_read;
+	}
+
+	// read byte by byte, reread block if necessary
+	bytes_read = 0;
+	while (bytes_read < n && entry->offset < entry->size) {
+		// copy byte from buffer
+		buf[bytes_read++] = blockbuf[entry->offset++ % BLOCKSIZE];
+
+		// change current block if necessary
+		if (entry->offset % BLOCKSIZE == 0) { // only execute if will continue
+			entry->curr = fat_next(entry->curr);
+			if (getblock(entry->curr, blockbuf))
+				break;
+		}
+	}
+
+	free(blockbuf);
+	return (bytes_read) ?: -1; // should return -1 if trying to read after EOF
 }
 
 int myfs_write(int fd, void *buf, int n)
 {
 	int bytes_written = -1;
 
+	if (n > MAXREADWRITE)
+		return bytes_written;
+
+	// check if file open
+	struct open_entry *entry = open_get(&opentable, fd);
+
+	if (entry == NULL)
+		return bytes_written;
+
 	// same as read, instead if offset == size and bytes_written < n,
 	// increment size and if necessary allocate new block on fat
 
+	// if no blocks, allocate in beginning
+	if (entry->size == 0) {
+		entry->start = entry->curr = fat_setnext(0);
+		if (!entry->start) // no space available
+			return bytes_written;
+	}
+
+	// current block
+	char *blockbuf = malloc(BLOCKSIZE);
+	if (getblock(entry->curr, blockbuf)) {
+		free(blockbuf);
+		return bytes_written;
+	}
+
+	bytes_written = 0;
+	while (bytes_written < n) {
+		blockbuf[entry->offset++] = buf[bytes_written++];
+		if (entry->offset >= entry->size)
+			entry->size = entry->offset;
+		if (entry->offset % BLOCKSIZE == 0) {
+			if (entry->offset == entry->size)
+				entry->curr = fat_setnext(entry->curr);
+			else
+				entry->curr = fat_getnext(entry->curr);
+			if (getblock(entry->curr, blockbuf))
+				break;
+	}
+
+	free(blockbuf);
 	return (bytes_written);
 }
 
@@ -456,4 +521,64 @@ void myfs_print_blocks (char *  filename)
 	// for each file, traverse fat from their start
 }
 
+// FAT functions
 
+// 2 bytes per FAT block, first 3 blocks for superblock and directory entry
+#define FATBLOCK(blk)  ((blk) / (BLOCKSIZE / 2) + 3)
+#define FATOFFSET(blk) ((blk) % (BLOCKSIZE / 2))
+
+// size of FAT in blocks
+#define FATSIZE (BLOCKCOUNT * 2 / BLOCKSIZE)
+
+// may cache the following with buffers, written after each set
+
+BLOCKTYPE fat_getnext(BLOCKTYPE blk)
+{
+	// read block in FAT
+	BLOCKTYPE *buf = malloc(BLOCKSIZE);
+	if (getblock(FATBLOCK(blk), buf)) {
+		free(buf);
+		return 0; // used only for unallocated blocks anyway
+	}
+	BLOCKTYPE res = buf[FATOFFSET(blk)];
+	free(buf);
+	return res;
+}
+
+BLOCKTYPE fat_setnext(BLOCKTYPE blk)
+{
+	BLOCKTYPE *buf = malloc(BLOCKSIZE);
+
+	// search for free space in current block, else jump to another block of FAT
+	BLOCKTYPE newblk = blk ?: BLOCKCOUNT - 1, // perhaps pick a more random default quantity
+	          res = 0;
+	while (!res) {
+		// 5 is coprime with 3*BLOCKCOUNT/4 = 24K, the number of blocks dedicated to file data
+		// x -> px+1 mod q is bijective for (p,q) = 1 and (p-1) | q and provides good separation
+		newblk = BLOCKCOUNT/4 + (5 * (newblk - BLOCKCOUNT/4) + 1) % (3*BLOCKCOUNT/4);
+		if (newblk == blk) // went full circle, no free space
+			break;
+
+		// first check if load unnecessary
+		if (getblock(FATBLOCK(newblk), buf))
+			break;
+		if (buf[FATOFFSET(newblk)] == 0) {
+			res = newblk;
+			buf[FATOFFSET(newblk)] = -1; // allocated but not yet used
+			if (putblock(FATBLOCK(newblk), buf))
+				res = -1; // signifies error
+			else if (!blk) {
+				if (getblock(FATBLOCK(blk), buf)) {
+					res = -1;
+				} else {
+					buf[FATOFFSET(blk)] = newblk;
+					if (putblock(FATBLOCK(blk), buf))
+						res = -1; // 6 indents, sorry Linus
+				}
+			}
+		}
+	}
+
+	free(buf);
+	return res;
+}
