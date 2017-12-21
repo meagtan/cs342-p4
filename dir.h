@@ -22,7 +22,7 @@ struct dir {
 			int size;
 			BLOCKTYPE start; // index of first data block
 		} inode;
-	} fcbs[MAXFILECOUNT];
+	} fcbs[MAXFILECOUNT]; // kept separate from entries as entries may be moved after deletion
 	int filenum;
 	int minfree; // first available fcb
 };

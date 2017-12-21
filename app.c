@@ -78,6 +78,10 @@ int main(int argc, char *argv[])
 
 	myfs_close (fd1);
 	myfs_close (fd2); 
+
+	myfs_print_dir();
+	myfs_print_blocks(filename[0]);
+	myfs_print_blocks(filename[1]);
 	 
 	myfs_umount(); 
 	

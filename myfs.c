@@ -152,7 +152,6 @@ int putblock (int blocknum, void *buf)
    internal functions.
  */
 
-// TODO do I need to set global variables here? perhaps use putblock
 int myfs_diskcreate (char *vdisk)
 {
 	int fd, i;
@@ -251,7 +250,7 @@ int myfs_mount (char *vdisk)
 	}
 	memcpy(&superblock, buf, sizeof(struct superblock)); // assuming sizeof superblock < BLOCKSIZE
 
-	// copy elements of superblock into memory, or simply read global variables from buffer directly
+	// TODO copy elements of superblock into memory, or simply read global variables from buffer directly
 
 	// read directory, assuming its size is a little over 1 block
 	if (getblock(1, &dir) || getblock(2, buf)) {
@@ -447,16 +446,19 @@ int myfs_read(int fd, void *buf, int n)
 		// change current block if necessary
 		if (entry->offset % BLOCKSIZE == 0) { // only execute if will continue
 			entry->curr = fat_getnext(entry->curr);
-			printf("next block %d\n", entry->curr);
+			// printf("next block %d\n", entry->curr);
 			if (getblock(entry->curr, blockbuf))
 				break;
 		}
 
 		printf("read %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
+		// printf("read %s\n", buf + bytes_read);
 	}
 
+	/*
 	if (bytes_read < n && entry->offset < entry->inode->size)
 		printf("reading block %d failed\n", entry->curr);
+	*/
 
 	free(blockbuf);
 	return (bytes_read) ?: -1; // should return -1 if trying to read after EOF
@@ -515,14 +517,16 @@ int myfs_write(int fd, void *buf, int n)
 				entry->curr = fat_setnext(entry->curr);
 			else
 				entry->curr = fat_getnext(entry->curr);
-			printf("next block %d\n", entry->curr);
+			// printf("next block %d\n", entry->curr);
 			if (getblock(entry->curr, blockbuf))
 				break;
 		}
 
 		printf("written %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
+		// printf("written %s\n", buf + bytes_written);
 	}
 
+	putblock(entry->curr, blockbuf);
 	free(blockbuf);
 	return (bytes_written);
 }
@@ -533,6 +537,29 @@ int myfs_truncate(int fd, int size)
 	// then seek size in fat
 	// deallocate every block after current block in order on fat
 	// on current block, just change file size to size
+
+	struct open_entry *entry = open_get(&opentable, fd);
+
+	if (entry == NULL || entry->inode->size <= size)
+		return -(!entry);
+
+	// traverse fat until curr becomes outside size
+	BLOCKTYPE curr = entry->inode->start, temp;
+	for (int i = 0; i * BLOCKSIZE < size; ++i) // curr should never be -1 or 0
+		curr = fat_getnext(curr);
+
+	// deallocate every block after and including curr
+	while (curr != -1) { // should never be 0
+		temp = fat_getnext(curr);
+		if (fat_dealloc(curr))
+			return -1;
+		curr = temp;
+	}
+
+	entry->inode->size = size;
+	if (entry->offset > size)
+		entry->offset = size;
+
 	return (0);
 }
 
@@ -543,6 +570,23 @@ int myfs_seek(int fd, int offset)
 
 	// traverse fat
 	// compare offset with size
+	struct open_entry *entry = open_get(&opentable, fd);
+	if (entry == NULL)
+		return position;
+
+	if (offset > entry->inode->size)
+		offset = entry->inode->size;
+
+	// start from beginning of file
+	entry->offset = 0;
+	entry->curr = entry->inode->start;
+
+	// skip blocks before last one
+	for (int i = 0; i < offset / BLOCKSIZE; ++i) {
+		// entry->offset += BLOCKSIZE;
+		entry->curr = fat_getnext(entry->curr);
+	}
+	entry->offset += offset; // % BLOCKSIZE;
 
 	return (position);
 }
@@ -552,6 +596,11 @@ int myfs_filesize (int fd)
 	int size = -1;
 
 	// retrieve open table entry
+	struct open_entry *entry = open_get(&opentable, fd);
+
+	if (entry == NULL)
+		return size;
+	size = entry->inode->size;
 
 	return (size);
 }
@@ -560,6 +609,8 @@ int myfs_filesize (int fd)
 void myfs_print_dir ()
 {
 	// linear scan through dir
+	for (int i = 0; i < dir.filenum; ++i)
+		printf("%s\n", dir.entries[i].filename);
 }
 
 
@@ -567,6 +618,18 @@ void myfs_print_blocks (char *  filename)
 {
 	// find filename on dir
 	// for each file, traverse fat from their start
+	int inum = dir_get(&dir, filename);
+
+	if (inum == -1)
+		return;
+
+	BLOCKTYPE curr = dir.fcbs[inum].inode.start;
+	printf("%s:", filename);
+	while (curr != 0 && curr != (BLOCKTYPE) -1) {
+		printf(" %d", curr);
+		curr = fat_getnext(curr);
+	}
+	putchar('\n');
 }
 
 // FAT functions
@@ -589,7 +652,7 @@ BLOCKTYPE fat_getnext(BLOCKTYPE blk)
 		return 0; // used only for unallocated blocks anyway
 	}
 	BLOCKTYPE res = buf[FATOFFSET(blk)];
-	printf("%d: disk[%d][%d] = %d\n", blk, FATBLOCK(blk), FATOFFSET(blk), res);
+	// printf("%d: disk[%d][%d] = %d\n", blk, FATBLOCK(blk), FATOFFSET(blk), res);
 	free(buf);
 	return res;
 }
@@ -608,13 +671,13 @@ BLOCKTYPE fat_setnext(BLOCKTYPE blk)
 		newblk = BLOCKCOUNT/4 + ((1+4*!blk) * (newblk - BLOCKCOUNT/4) + 1) % (3*BLOCKCOUNT/4);
 		if (newblk == blk) // went full circle, no free space
 			break;
-		printf("blk: %d, newblk: %d\n", blk, newblk);
+		// printf("blk: %d, newblk: %d\n", blk, newblk);
 
 		// first check if load unnecessary
 		if (getblock(FATBLOCK(newblk), buf))
 			break;
 		if (buf[FATOFFSET(newblk)] == 0) {
-			printf("%d is free\n", newblk);
+			// printf("%d is free\n", newblk);
 			res = newblk;
 			buf[FATOFFSET(newblk)] = -1; // allocated but not yet used
 			if (putblock(FATBLOCK(newblk), buf))
@@ -624,7 +687,7 @@ BLOCKTYPE fat_setnext(BLOCKTYPE blk)
 					res = -1;
 				} else {
 					buf[FATOFFSET(blk)] = newblk;
-					printf("%d: disk[%d][%d] = %d\n", blk, FATBLOCK(blk), FATOFFSET(blk), newblk);
+					// printf("%d: disk[%d][%d] = %d\n", blk, FATBLOCK(blk), FATOFFSET(blk), newblk);
 					if (putblock(FATBLOCK(blk), buf))
 						res = -1; // 6 indents, sorry Linus
 				}
