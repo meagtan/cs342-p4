@@ -30,7 +30,7 @@ int main(int argc, char *argv[])
 	}
 	else 
 		printf ("filesystem %s mounted\n", diskname); 
-	
+
 	for (i=0; i<3; ++i) {
 		if (myfs_create (filename[i]) != 0) {
 			printf ("could not create file %s\n", filename[i]); 
@@ -40,13 +40,15 @@ int main(int argc, char *argv[])
 			printf ("file %s created\n", filename[i]); 
 	}
 
-	fd0 = myfs_open (filename[0]); 	
+	for (int j = 0; j < 2; ++j) {
+
+	fd0 = myfs_open (filename[j]); 	
 	if (fd0 == -1) {
-		printf ("file open failed: %s\n", filename[0]); 
+		printf ("file open failed: %s\n", filename[j]); 
 		exit (1); 
 	}
 	
-	for (i=0; i<100; ++i) {
+	for (i=0; i<10; ++i) {
 		n = myfs_write (fd0, buf, 500);  
 		if (n != 500) {
 			printf ("vsfs_write failed\n"); 
@@ -56,18 +58,20 @@ int main(int argc, char *argv[])
 
 	myfs_close (fd0); 
 
-	fd0 = myfs_open (filename[0]); 
+	fd0 = myfs_open (filename[j]); 
  
-	for (i=0; i<(100*500); ++i) 
+	for (i=0; i<(10*500/100); ++i) 
 	{
-		n = myfs_read (fd0, buf, 1); 
-		if (n != 1) {
+		n = myfs_read (fd0, buf, 100); 
+		if (n != 100) {
 			printf ("vsfs_read failed\n"); 
 			exit(1); 
 		}
 	}
 	
 	myfs_close (fd0); 
+
+	}
 
 	fd1 = myfs_open (filename[1]); 
 	fd2 = myfs_open (filename[2]); 

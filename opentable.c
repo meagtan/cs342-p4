@@ -35,11 +35,13 @@ int open_add(struct opentable *open, char *filename, BLOCKTYPE inum, struct dir 
 	// fill entry
 	struct open_entry *entry = &open->entries[open->minfree];
 	entry->valid = 1;
-	memcpy(entry->filename, filename, MAXFILENAMESIZE);
+	memcpy(entry->filename, filename, MAXFILENAMESIZE); // should it be strcpy?
 	entry->inum = inum;
 	entry->offset = 0;
 
-	// load fcb TODO
+	// link fcb
+	entry->inode = &dir->fcbs[inum].inode;
+	entry->curr  = entry->inode->start;
 
 	// update filenum, minfree
 	open->filenum++;

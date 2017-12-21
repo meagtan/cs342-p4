@@ -11,10 +11,9 @@ struct opentable {
 		int valid; // whether entry represents valid file or not; need indices not to change
 		char filename[MAXFILENAMESIZE]; // search through dir
 		BLOCKTYPE inum;  // index of fcb
+		struct inode *inode;
 		int offset;
-		int size;        // keep up to date with fcb
-		BLOCKTYPE start, // starting block
-		          curr;  // current block
+		BLOCKTYPE curr;  // current block
 	} entries[MAXOPENFILES];
 	int filenum; // no of open files
 	int minfree; // smallest free index in table, -1 if full, may be updated after opening or closing files

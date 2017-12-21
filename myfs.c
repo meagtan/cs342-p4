@@ -62,6 +62,7 @@ struct opentable opentable;
 // TODO implement, read FAT from disk onto buffer
 BLOCKTYPE fat_getnext(BLOCKTYPE blk);
 BLOCKTYPE fat_setnext(BLOCKTYPE blk); // finds and sets next block for blk (0 represents new file), if none available returns 0
+int fat_dealloc(BLOCKTYPE blk); // deallocates block
 
 /*
 struct fat {
@@ -164,7 +165,7 @@ int myfs_diskcreate (char *vdisk)
 	}
 
 	// fill disk with zeros
-	bzero((void *) buf, BLOCKSIZE);
+	bzero(buf, BLOCKSIZE);
 	fd = open(vdisk, O_RDWR);
 	for (i = 0; i < DISKSIZE / BLOCKSIZE; ++i) {
 		if (write(fd, buf, BLOCKSIZE) != BLOCKSIZE) {
@@ -193,12 +194,21 @@ int myfs_makefs(char *vdisk)
 
 	// perform your format operations here.
 	printf ("formatting disk=%s, size=%d\n", vdisk, disk_size);
-	// TODO
+
+	char buf[BLOCKSIZE];
+	int i;
+	memset(buf, 0, BLOCKSIZE);
+
+	for (i = 0; i < disk_blockcount / 4; ++i)
+		if (putblock(i, buf))
+			break;
+
+	// TODO write superblock
 
 	fsync (disk_fd);
 	close (disk_fd);
 
-	return (0);
+	return -(i < disk_blockcount / 4);
 }
 
 /*
@@ -251,6 +261,7 @@ int myfs_mount (char *vdisk)
 	}
 	memcpy(((char *) &dir) + BLOCKSIZE, buf, sizeof(struct dir) - BLOCKSIZE);
 
+	/*
 	// read FAT, assuming it is 16 blocks
 	for (int i = 0; i < sizeof(struct fat) / BLOCKSIZE; ++i) {
 		if (getblock(2 + i, ((char *) &fat) + i * BLOCKSIZE)) {
@@ -259,6 +270,7 @@ int myfs_mount (char *vdisk)
 			return -1;
 		}
 	}
+	*/
 
 	// initialize open file table
 	open_init(&opentable);
@@ -294,6 +306,7 @@ int myfs_umount()
 
 	free(buf);
 
+	/*
 	// write FAT, assuming it is 16 blocks
 	for (int i = 0; i < sizeof(struct fat) / BLOCKSIZE; ++i) {
 		if (putblock(2 + i, ((char *) &fat) + i * BLOCKSIZE)) {
@@ -301,6 +314,7 @@ int myfs_umount()
 			return -1;
 		}
 	}
+	*/
 
 	fsync (disk_fd);
 	close (disk_fd);
@@ -336,7 +350,7 @@ int myfs_open(char *filename)
 	}
 
 	// create new open file table entry for index
-	index = open_add(&opentable, filename, inum, &dir); // TODO add function
+	index = open_add(&opentable, filename, inum, &dir);
 	if (index == -1) {
 		printf("cannot open file %s\n", filename);
 		return -1;
@@ -351,7 +365,6 @@ int myfs_close(int fd)
 	// check if open first
 	// write cached blocks of file into disk, if any
 	// remove from open file table
-	// TODO write as member function for open
 	return open_close(&opentable, fd);
 }
 
@@ -359,7 +372,7 @@ int myfs_delete(char *filename)
 {
 	struct inode inode;
 
-	// TODO first check if open
+	// first check if open
 	if (open_isopen(&opentable, filename)) {
 		printf("file %s is open\n", filename);
 		return -1;
@@ -375,9 +388,8 @@ int myfs_delete(char *filename)
 
 	// deallocate data blocks in order
 	BLOCKTYPE i = inode.start, j;
-	while (fat.table[i] != 0) {
-		j = fat.table[i];
-		fat.table[i] = 0; // is more needed for deallocation?
+	while ((j = fat_getnext(i)) != 0) {
+		fat_dealloc(i); // is more needed for deallocation?
 		i = j;
 	}
 
@@ -399,7 +411,7 @@ int myfs_read(int fd, void *buf, int n)
 	// check if file open
 	struct open_entry *entry = open_get(&opentable, fd);
 
-	if (entry == NULL || entry->size == 0) // empty file
+	if (entry == NULL || entry->inode->size == 0) // empty file
 		return bytes_read;
 
 	// retrieve current block
@@ -407,25 +419,44 @@ int myfs_read(int fd, void *buf, int n)
 	// if current block changes (size / BLOCKSIZE), retrieve new block and update curr
 
 	char *blockbuf = malloc(BLOCKSIZE);
+	int siz; // how many bytes to read
 
 	if (getblock(entry->curr, blockbuf)) {
+		printf("reading block %d failed\n", entry->curr);
 		free(blockbuf);
 		return bytes_read;
 	}
 
 	// read byte by byte, reread block if necessary
 	bytes_read = 0;
-	while (bytes_read < n && entry->offset < entry->size) {
+	while (bytes_read < n && entry->offset < entry->inode->size) {
 		// copy byte from buffer
-		buf[bytes_read++] = blockbuf[entry->offset++ % BLOCKSIZE];
+		// buf[bytes_read++] = blockbuf[entry->offset++ % BLOCKSIZE];
+
+		// try to read remaining bytes
+		siz = n - bytes_read;
+		if (siz > entry->inode->size - entry->offset) // will reach EOF
+			siz = entry->inode->size - entry->offset;
+		if (siz > BLOCKSIZE - entry->offset % BLOCKSIZE) // will reach end of block
+			siz = BLOCKSIZE - entry->offset % BLOCKSIZE;
+
+		memcpy(buf + bytes_read, blockbuf + entry->offset % BLOCKSIZE, siz);
+		bytes_read += siz;
+		entry->offset += siz;
 
 		// change current block if necessary
 		if (entry->offset % BLOCKSIZE == 0) { // only execute if will continue
-			entry->curr = fat_next(entry->curr);
+			entry->curr = fat_getnext(entry->curr);
+			printf("next block %d\n", entry->curr);
 			if (getblock(entry->curr, blockbuf))
 				break;
 		}
+
+		printf("read %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
 	}
+
+	if (bytes_read < n && entry->offset < entry->inode->size)
+		printf("reading block %d failed\n", entry->curr);
 
 	free(blockbuf);
 	return (bytes_read) ?: -1; // should return -1 if trying to read after EOF
@@ -434,6 +465,7 @@ int myfs_read(int fd, void *buf, int n)
 int myfs_write(int fd, void *buf, int n)
 {
 	int bytes_written = -1;
+	int siz;
 
 	if (n > MAXREADWRITE)
 		return bytes_written;
@@ -448,9 +480,9 @@ int myfs_write(int fd, void *buf, int n)
 	// increment size and if necessary allocate new block on fat
 
 	// if no blocks, allocate in beginning
-	if (entry->size == 0) {
-		entry->start = entry->curr = fat_setnext(0);
-		if (!entry->start) // no space available
+	if (entry->inode->size == 0) {
+		entry->inode->start = entry->curr = fat_setnext(0);
+		if (!entry->inode->start) // no space available
 			return bytes_written;
 	}
 
@@ -463,16 +495,32 @@ int myfs_write(int fd, void *buf, int n)
 
 	bytes_written = 0;
 	while (bytes_written < n) {
-		blockbuf[entry->offset++] = buf[bytes_written++];
-		if (entry->offset >= entry->size)
-			entry->size = entry->offset;
+		// blockbuf[entry->offset++] = buf[bytes_written++];
+
+		// try to write remaining blocks
+		siz = n - bytes_written;
+		if (siz > BLOCKSIZE - entry->offset % BLOCKSIZE) // will reach end of block
+			siz = BLOCKSIZE - entry->offset % BLOCKSIZE;
+
+		memcpy(blockbuf + entry->offset % BLOCKSIZE, buf + bytes_written, siz);
+		bytes_written += siz;
+		entry->offset += siz;
+
+		if (entry->offset >= entry->inode->size)
+			entry->inode->size = entry->offset;
 		if (entry->offset % BLOCKSIZE == 0) {
-			if (entry->offset == entry->size)
+			if (putblock(entry->curr, blockbuf))
+				break;
+			if (entry->offset == entry->inode->size)
 				entry->curr = fat_setnext(entry->curr);
 			else
 				entry->curr = fat_getnext(entry->curr);
+			printf("next block %d\n", entry->curr);
 			if (getblock(entry->curr, blockbuf))
 				break;
+		}
+
+		printf("written %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
 	}
 
 	free(blockbuf);
@@ -541,6 +589,7 @@ BLOCKTYPE fat_getnext(BLOCKTYPE blk)
 		return 0; // used only for unallocated blocks anyway
 	}
 	BLOCKTYPE res = buf[FATOFFSET(blk)];
+	printf("%d: disk[%d][%d] = %d\n", blk, FATBLOCK(blk), FATOFFSET(blk), res);
 	free(buf);
 	return res;
 }
@@ -550,28 +599,32 @@ BLOCKTYPE fat_setnext(BLOCKTYPE blk)
 	BLOCKTYPE *buf = malloc(BLOCKSIZE);
 
 	// search for free space in current block, else jump to another block of FAT
-	BLOCKTYPE newblk = blk ?: BLOCKCOUNT - 1, // perhaps pick a more random default quantity
+	BLOCKTYPE newblk = blk ?: BLOCKCOUNT/3, // perhaps pick a more random default quantity
 	          res = 0;
 	while (!res) {
+		// searches linearly for next block of same file, else leaps to 5x+1 where x is the current block in data region
 		// 5 is coprime with 3*BLOCKCOUNT/4 = 24K, the number of blocks dedicated to file data
 		// x -> px+1 mod q is bijective for (p,q) = 1 and (p-1) | q and provides good separation
-		newblk = BLOCKCOUNT/4 + (5 * (newblk - BLOCKCOUNT/4) + 1) % (3*BLOCKCOUNT/4);
+		newblk = BLOCKCOUNT/4 + ((1+4*!blk) * (newblk - BLOCKCOUNT/4) + 1) % (3*BLOCKCOUNT/4);
 		if (newblk == blk) // went full circle, no free space
 			break;
+		printf("blk: %d, newblk: %d\n", blk, newblk);
 
 		// first check if load unnecessary
 		if (getblock(FATBLOCK(newblk), buf))
 			break;
 		if (buf[FATOFFSET(newblk)] == 0) {
+			printf("%d is free\n", newblk);
 			res = newblk;
 			buf[FATOFFSET(newblk)] = -1; // allocated but not yet used
 			if (putblock(FATBLOCK(newblk), buf))
 				res = -1; // signifies error
-			else if (!blk) {
+			else if (blk) {
 				if (getblock(FATBLOCK(blk), buf)) {
 					res = -1;
 				} else {
 					buf[FATOFFSET(blk)] = newblk;
+					printf("%d: disk[%d][%d] = %d\n", blk, FATBLOCK(blk), FATOFFSET(blk), newblk);
 					if (putblock(FATBLOCK(blk), buf))
 						res = -1; // 6 indents, sorry Linus
 				}
@@ -581,4 +634,24 @@ BLOCKTYPE fat_setnext(BLOCKTYPE blk)
 
 	free(buf);
 	return res;
+}
+
+int fat_dealloc(BLOCKTYPE blk)
+{
+	// read block in FAT
+	BLOCKTYPE *buf = malloc(BLOCKSIZE);
+	if (getblock(FATBLOCK(blk), buf)) {
+		free(buf);
+		return -1;
+	}
+
+	buf[FATOFFSET(blk)] = 0;
+
+	if (putblock(FATBLOCK(blk), buf)) {
+		free(buf);
+		return -1;
+	}
+
+	free(buf);
+	return 0;
 }
