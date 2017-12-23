@@ -33,11 +33,14 @@ int open_add(struct opentable *open, char *filename, BLOCKTYPE inum, struct dir 
 		return -1;
 
 	// fill entry
-	struct open_entry *entry = &open->entries[open->minfree];
+	int fd = open->minfree;
+	struct open_entry *entry = &open->entries[fd];
 	entry->valid = 1;
 	memcpy(entry->filename, filename, MAXFILENAMESIZE); // should it be strcpy?
 	entry->inum = inum;
 	entry->offset = 0;
+
+	// printf("added inode %d to open table with fd %d\n", inum, open->minfree);
 
 	// link fcb
 	entry->inode = &dir->fcbs[inum].inode;
@@ -50,8 +53,12 @@ int open_add(struct opentable *open, char *filename, BLOCKTYPE inum, struct dir 
 		i = (i + 1) % MAXOPENFILES;
 	if (i == open->minfree) // looped through entire list
 		open->minfree = -1;
+	else
+		open->minfree = i;
 
-	return 0;
+	// printf("new minfree %d\n", open->minfree);
+
+	return fd;
 }
 
 int open_close(struct opentable *open, int fd)

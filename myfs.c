@@ -55,44 +55,15 @@ struct superblock {
 	// TODO need not be kept
 } superblock;
 
+// make these point to shared memory
+
 struct dir dir;
 
 struct opentable opentable;
 
-// TODO implement, read FAT from disk onto buffer
 BLOCKTYPE fat_getnext(BLOCKTYPE blk);
 BLOCKTYPE fat_setnext(BLOCKTYPE blk); // finds and sets next block for blk (0 represents new file), if none available returns 0
 int fat_dealloc(BLOCKTYPE blk); // deallocates block
-
-/*
-struct fat {
-	BLOCKTYPE table[BLOCKCOUNT];
-	// anything else?
-} fat;
-
-// may implement linked list structure here, each directory entry may link to first open file entry
-// and open file entries may link to the next entry or -1
-struct opentable {
-	struct open_entry {
-		int valid; // whether entry represents valid file or not; need indices not to change
-		char filename[MAXFILENAMESIZE]; // search through dir
-		BLOCKTYPE inum;  // index of fcb
-		int offset;
-		int size;        // keep up to date with fcb
-		BLOCKTYPE start, // starting block
-		          curr;  // current block
-	} entries[MAXOPENFILES];
-	int filenum; // no of open files
-	int minfree; // smallest free index in table, -1 if full, may be updated after opening or closing files
-} open;
-*/
-
-/*
-open_add(open, filename, inum);
-open_close(
-open_isopen
-open_get
-*/
 
 /*
    Reads block blocknum into buffer buf.
@@ -327,9 +298,9 @@ int myfs_create(char *filename)
 	// retrieve new FCB
 	int inum = dir_add(&dir, filename);
 	if (inum == -1) // file already exists
-		return -1;
-	printf("created file %s with fcb index %d\n", filename, inum);
-	return (0);
+		return myfs_open(filename); // */ -1;
+	// printf("created file %s with fd %d\n", filename, inum);
+	return myfs_open(filename); // */ 0;
 }
 
 
@@ -447,11 +418,11 @@ int myfs_read(int fd, void *buf, int n)
 		if (entry->offset % BLOCKSIZE == 0) { // only execute if will continue
 			entry->curr = fat_getnext(entry->curr);
 			// printf("next block %d\n", entry->curr);
-			if (getblock(entry->curr, blockbuf))
+			if (entry->curr == -1 || getblock(entry->curr, blockbuf))
 				break;
 		}
 
-		printf("read %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
+		// printf("read %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
 		// printf("read %s\n", buf + bytes_read);
 	}
 
@@ -514,15 +485,15 @@ int myfs_write(int fd, void *buf, int n)
 			if (putblock(entry->curr, blockbuf))
 				break;
 			if (entry->offset == entry->inode->size)
-				entry->curr = fat_setnext(entry->curr);
+				entry->curr = fat_setnext(entry->curr); // returns 0 if no space left
 			else
 				entry->curr = fat_getnext(entry->curr);
 			// printf("next block %d\n", entry->curr);
-			if (getblock(entry->curr, blockbuf))
+			if (entry->curr == 0 || getblock(entry->curr, blockbuf))
 				break;
 		}
 
-		printf("written %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
+		// printf("written %d bytes, offset %d, block %d, size %d\n", siz, entry->offset, entry->curr, entry->inode->size);
 		// printf("written %s\n", buf + bytes_written);
 	}
 

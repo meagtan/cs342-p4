@@ -42,6 +42,8 @@ int dir_add(struct dir *dir, char *filename)
 		dir->entries[j+1] = dir->entries[j]; // struct copy
 	strcpy(dir->entries[k].filename, filename);
 
+	// printf("added %s to entry %d in dir\n", filename, k);
+
 	// find free entry in FCB table
 	i = dir->minfree;
 
@@ -56,6 +58,8 @@ int dir_add(struct dir *dir, char *filename)
 		dir->minfree = (dir->minfree + 1) % MAXFILECOUNT;
 	if (dir->minfree == i)
 		dir->minfree = -1;
+
+	// printf("added file to inode %d, new minfree = %d\n", i, dir->minfree);
 
 	return k;
 }
