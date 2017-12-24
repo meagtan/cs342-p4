@@ -15,6 +15,7 @@ struct opentable {
 		int offset;
 		BLOCKTYPE curr;  // current block
 	} entries[MAXOPENFILES];
+	int counts[MAXFILECOUNT]; // no of open instances of each file
 	int filenum; // no of open files
 	int minfree; // smallest free index in table, -1 if full, may be updated after opening or closing files
 };
@@ -25,7 +26,7 @@ int open_add(struct opentable *, char *filename, BLOCKTYPE inum, struct dir *);
 
 int open_close(struct opentable *, int fd);
 
-int open_isopen(struct opentable *, char *filename);
+int open_isopen(struct opentable *, char *filename, struct dir *);
 
 struct open_entry *open_get(struct opentable *, int fd);
 

@@ -58,6 +58,8 @@ int open_add(struct opentable *open, char *filename, BLOCKTYPE inum, struct dir 
 
 	// printf("new minfree %d\n", open->minfree);
 
+	open->counts[inum]++;
+
 	return fd;
 }
 
@@ -68,18 +70,23 @@ int open_close(struct opentable *open, int fd)
 
 	open->entries[fd].valid = 0;
 	open->filenum--;
+	open->counts[open->entries[fd].inum]--;
 	if (open->minfree == -1 || open->minfree > fd)
 		open->minfree = fd;
 	return 0;
 }
 
-int open_isopen(struct opentable *open, char *filename)
+int open_isopen(struct opentable *open, char *filename, struct dir *dir)
 {
+	/*
 	for (int i = 0; i < MAXOPENFILES; ++i)
 		if (open->entries[i].valid && !strcmp(open->entries[i].filename, filename))
 			return 1;
 
 	return 0;
+	*/
+
+	return open->counts[dir_get(dir, filename)];
 }
 
 struct open_entry *open_get(struct opentable *open, int fd)

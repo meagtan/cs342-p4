@@ -18,7 +18,7 @@ int main(int argc, char *argv[])
 {
 	char diskname[128];
 	char filename[16][MAXFILENAMESIZE];
-	int i, j, k, n;
+	int i, j, k;
 	// int fd0, fd1, fd2;       // file handles
 	char buf[MAXREADWRITE];
 	clock_t start, end, diff;
@@ -45,13 +45,13 @@ int main(int argc, char *argv[])
 	for (i = 0, siz = 100; i < 5; ++i, siz *= 10) {
 		diff = 0;
 		MEASURE(!myfs_mount(diskname));
-		fprintf(stderr, "mount\t%d\t%ld\n", 16 * (siz == 100 ? 0 : siz / 10), diff);
+		fprintf(stderr, "mount\t%d\t%ld\n", 16 * (i ? siz / 10 : 0), diff);
 
 		// create or open each file
 		for (j = 0; j < 16; ++j) {
 			diff = 0;
 			MEASURE((fd[j] = myfs_create(filename[j])) != -1);
-			fprintf(stderr, "%s\t%d\t%d\t%d\t%ld\n", i ? "open" : "create", j, fd[j], myfs_filesize(fd[j]), diff);
+			fprintf(stderr, "%s\t%d\t%d\t%ld\n", i ? "open" : "create", j, myfs_filesize(fd[j]), diff);
 		}
 
 		// write siz bytes to each file
@@ -100,7 +100,7 @@ int main(int argc, char *argv[])
 		// unmount disk
 		diff = 0;
 		MEASURE(myfs_umount() == 0);
-		fprintf(stderr, "unmount\t%d\t%ld\n", siz, diff);
+		fprintf(stderr, "unmount\t%d\t%ld\n", 16 * siz, diff);
 	}
 
 }
