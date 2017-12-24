@@ -97,6 +97,15 @@ int main(int argc, char *argv[])
 			fprintf(stderr, "close\t%d\t%d\t%ld\n", j, k, diff);
 		}
 
+		// if at last iteration delete each file
+		if (i == 4) {
+			for (j = 0; j < 16; ++j) {
+				diff = 0;
+				MEASURE(myfs_delete(filename[j]) == 0);
+				fprintf(stderr, "delete\t%d\t%ld\n", j, diff);
+			}
+		}
+
 		// unmount disk
 		diff = 0;
 		MEASURE(myfs_umount() == 0);
