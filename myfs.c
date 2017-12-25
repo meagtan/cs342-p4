@@ -5,13 +5,15 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/shm.h>
+#include <sys/mman.h>
 
 #include "myfs.h"
 
 // Global Variables
 char disk_name[128];   // name of virtual disk file
 int  disk_size;        // size in bytes - a power of 2
-int  disk_fd;          // disk file handle
+int  disk_fd = 0;      // disk file handle
 int  disk_blockcount;  // block count on disk
 
 /*
@@ -48,6 +50,7 @@ int  disk_blockcount;  // block count on disk
 #include "dir.h"
 #include "opentable.h"
 
+// directory entry, inode table, FAT etc. locations hardcoded, need not be kept here
 struct superblock {
 	char disk_name[128];
 	int disk_size;
@@ -55,10 +58,14 @@ struct superblock {
 	// TODO need not be kept
 } superblock;
 
+// shared memory
+// TODO using shm requires linking to another static library
+int shm_fd;
+size_t shm_size = 2*BLOCKSIZE + sizeof(struct opentable); // 2 blocks for dir, to make it align better
+char shm_name[133]; // myfs_diskname
+
 // make these point to shared memory
-
 struct dir *dir;
-
 struct opentable *opentable;
 
 BLOCKTYPE fat_getnext(BLOCKTYPE blk);
@@ -130,7 +137,7 @@ int myfs_diskcreate (char *vdisk)
 
 	// create new file with size DISKSIZE
 	if (open(vdisk, O_RDWR | O_CREAT, 0666) == -1) {
-		printf("disk create error %s\n", vdisk);
+		// printf("disk create error %s\n", vdisk);
 		exit(1);
 	}
 
@@ -158,12 +165,12 @@ int myfs_makefs(char *vdisk)
 
 	disk_fd = open (disk_name, O_RDWR);
 	if (disk_fd == -1) {
-		printf ("disk open error %s\n", vdisk);
+		// printf ("disk open error %s\n", vdisk);
 		exit(1);
 	}
 
 	// perform your format operations here.
-	printf ("formatting disk=%s, size=%d\n", vdisk, disk_size);
+	// printf ("formatting disk=%s, size=%d\n", vdisk, disk_size);
 
 	char buf[BLOCKSIZE];
 	int i;
@@ -173,7 +180,13 @@ int myfs_makefs(char *vdisk)
 		if (putblock(i, buf))
 			break;
 
-	// TODO write superblock
+	// write superblock
+	strcpy(superblock.disk_name, disk_name);
+	superblock.disk_size = disk_size;
+	superblock.disk_blockcount = disk_blockcount;
+	memcpy(&superblock, buf, sizeof(struct superblock)); // assuming sizeof superblock < BLOCKSIZE
+	if (putblock(0, buf))
+		return -1;
 
 	fsync (disk_fd);
 	close (disk_fd);
@@ -194,17 +207,21 @@ int myfs_mount (char *vdisk)
 {
 	struct stat finfo;
 
+	// if already mounted
+	if (disk_fd != 0)
+		return -1;
+
 	strcpy (disk_name, vdisk);
 	disk_fd = open (disk_name, O_RDWR);
 	if (disk_fd == -1) {
-		printf ("myfs_mount: disk open error %s\n", disk_name);
+		// printf ("myfs_mount: disk open error %s\n", disk_name);
 		exit(1);
 	}
 
 	fstat (disk_fd, &finfo);
 
-	printf ("myfs_mount: mounting %s, size=%d\n", disk_name,
-		(int) finfo.st_size);
+	// printf ("myfs_mount: mounting %s, size=%d\n", disk_name,
+	// 	(int) finfo.st_size);
 	disk_size = (int) finfo.st_size;
 	disk_blockcount = disk_size / BLOCKSIZE;
 
@@ -215,18 +232,34 @@ int myfs_mount (char *vdisk)
 
 	// read superblock into buffer
 	if (getblock(0, buf)) {
-		printf("could not read superblock\n");
+		// printf("could not read superblock\n");
 		free(buf);
 		return -1;
 	}
 	memcpy(&superblock, buf, sizeof(struct superblock)); // assuming sizeof superblock < BLOCKSIZE
 
-	// TODO copy elements of superblock into memory, or simply read global variables from buffer directly
+	// copy elements of superblock into memory, or simply read global variables from buffer directly
+	// superblock elements guaranteed to be the same as global variables, not necessary
+
+	// initialize shared memory
+#ifdef shm_open
+	sprintf(shm_name, "myfs_%s", disk_name);
+	shm_fd = shm_open(shm_name, O_RDWR | O_CREAT, 0666);
+	ftruncate(shm_fd, shm_size);
+	// printf("using shared memory\n");
 
 	// read directory, assuming its size is a little over 1 block
+	dir = mmap(0, sizeof(struct dir), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+	if (dir == MAP_FAILED) {
+		// printf("mapping dir failed\n");
+		exit(1);
+	}
+#else
 	dir = malloc(sizeof(struct dir));
+#endif
+
 	if (getblock(1, dir) || getblock(2, buf)) {
-		printf("could not read directory table\n");
+		// printf("could not read directory table\n");
 		free(buf);
 		return -1;
 	}
@@ -244,7 +277,15 @@ int myfs_mount (char *vdisk)
 	*/
 
 	// initialize open file table
+#ifdef shm_open
+	opentable = mmap(0, sizeof(struct opentable), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 2*BLOCKSIZE);
+	if (opentable == MAP_FAILED) {
+		// printf("mapping opentable failed\n");
+		exit(1);
+	}
+#else
 	opentable = malloc(sizeof(struct opentable));
+#endif
 	open_init(opentable);
 
 	free(buf);
@@ -256,14 +297,20 @@ int myfs_umount()
 {
 	// perform your unmount operations here
 
+	if (disk_fd == 0) // already unmounted or not open
+		return -1;
+
 	char *buf = malloc(BLOCKSIZE);
 
 	// copy elements of superblock from memory, or simply read global variables from buffer directly
+	strcpy(superblock.disk_name, disk_name);
+	superblock.disk_size = disk_size;
+	superblock.disk_blockcount = disk_blockcount;
 
 	// write superblock into buffer
 	memcpy(buf, &superblock, sizeof(struct superblock));
 	if (putblock(0, buf)) {
-		printf("could not write superblock\n");
+		// printf("could not write superblock\n");
 		free(buf);
 		return -1;
 	}
@@ -271,11 +318,13 @@ int myfs_umount()
 	// write directory, assuming its size is a little over 1 block
 	memcpy(buf, ((char *) dir) + BLOCKSIZE, sizeof(struct dir) - BLOCKSIZE); // should not wiping buffer here matter?
 	if (putblock(1, dir) || putblock(2, buf)) {
-		printf("could not write directory table\n");
+		// printf("could not write directory table\n");
 		free(buf);
 		return -1;
 	}
+#ifndef shm_open
 	free(dir);
+#endif
 	free(buf);
 
 	/*
@@ -288,10 +337,18 @@ int myfs_umount()
 	}
 	*/
 
+#ifdef shm_open
+	if (shm_unlink(shm_name)) {
+		// printf("unlink failed\n");
+		exit(1);
+	}
+#else
 	free(opentable);
+#endif
 
 	fsync (disk_fd);
 	close (disk_fd);
+	disk_fd = 0;
 	return (0);
 }
 
@@ -319,14 +376,14 @@ int myfs_open(char *filename)
 	// else create new open file table entry
 	// copy size and start from dir entry, curr = start, offset = 0
 	if (inum == -1) {
-		printf("file %s does not exist\n", filename);
+		// printf("file %s does not exist\n", filename);
 		return -1;
 	}
 
 	// create new open file table entry for index
 	index = open_add(opentable, filename, inum, dir);
 	if (index == -1) {
-		printf("cannot open file %s\n", filename);
+		// printf("cannot open file %s\n", filename);
 		return -1;
 	}
 
@@ -348,7 +405,7 @@ int myfs_delete(char *filename)
 
 	// first check if open
 	if (open_isopen(opentable, filename, dir)) {
-		printf("file %s is open\n", filename);
+		// printf("file %s is open\n", filename);
 		return -1;
 	}
 
@@ -356,7 +413,7 @@ int myfs_delete(char *filename)
 	// then remove it from directory entry and read its inode
 	int inum = dir_remove(dir, filename, &inode);
 	if (inum == -1) {
-		printf("file %s does not exist\n", filename);
+		// printf("file %s does not exist\n", filename);
 		return -1;
 	}
 
@@ -396,7 +453,7 @@ int myfs_read(int fd, void *buf, int n)
 	int siz; // how many bytes to read
 
 	if (getblock(entry->curr, blockbuf)) {
-		printf("reading block %d failed\n", entry->curr);
+		// printf("reading block %d failed\n", entry->curr);
 		free(blockbuf);
 		return bytes_read;
 	}
@@ -422,7 +479,7 @@ int myfs_read(int fd, void *buf, int n)
 		if (entry->offset % BLOCKSIZE == 0) { // only execute if will continue
 			entry->curr = fat_getnext(entry->curr);
 			// printf("next block %d\n", entry->curr);
-			if (entry->curr == -1 || getblock(entry->curr, blockbuf))
+			if (entry->curr == (BLOCKTYPE) -1 || getblock(entry->curr, blockbuf))
 				break;
 		}
 
@@ -524,7 +581,7 @@ int myfs_truncate(int fd, int size)
 		curr = fat_getnext(curr);
 
 	// deallocate every block after and including curr
-	while (curr != -1) { // should never be 0
+	while (curr != (BLOCKTYPE) -1) { // should never be 0
 		temp = fat_getnext(curr);
 		if (fat_dealloc(curr))
 			return -1;
@@ -645,16 +702,17 @@ BLOCKTYPE fat_setnext(BLOCKTYPE blk)
 		// searches linearly for next block of same file, else leaps to 5x+1 where x is the current block in data region
 		// 5 is coprime with 3*BLOCKCOUNT/4 = 24K, the number of blocks dedicated to file data
 		// x -> px+1 mod q is bijective for (p,q) = 1 and (p-1) | q and provides good separation
+		// In fact, one can probably show x -> 5x+1 mod 24K will tour all integers mod 24K much like x -> x+1 mod 24K will,
+		//  by noting that the nth iteration of the function takes x to 5^n x + (5^n-1)/(5-1) mod 24K
+		//  and then showing by induction that 2^k divides (5^n-1)/(5-1) (hence (5^n-1)/(5-1)*(4x+1)) iff 2^k divides n
 		newblk = BLOCKCOUNT/4 + ((1+4*!blk) * (newblk - BLOCKCOUNT/4) + 1) % (3*BLOCKCOUNT/4);
 		if (newblk == blk) // went full circle, no free space
 			break;
-		// printf("blk: %d, newblk: %d\n", blk, newblk);
 
 		// first check if load unnecessary
 		if (getblock(FATBLOCK(newblk), buf))
 			break;
 		if (buf[FATOFFSET(newblk)] == 0) {
-			// printf("%d is free\n", newblk);
 			res = newblk;
 			buf[FATOFFSET(newblk)] = -1; // allocated but not yet used
 			if (putblock(FATBLOCK(newblk), buf))
@@ -664,7 +722,6 @@ BLOCKTYPE fat_setnext(BLOCKTYPE blk)
 					res = -1;
 				} else {
 					buf[FATOFFSET(blk)] = newblk;
-					// printf("%d: disk[%d][%d] = %d\n", blk, FATBLOCK(blk), FATOFFSET(blk), newblk);
 					if (putblock(FATBLOCK(blk), buf))
 						res = -1; // 6 indents, sorry Linus
 				}

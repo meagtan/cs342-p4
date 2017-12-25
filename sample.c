@@ -66,10 +66,13 @@ int main(int argc, char *argv[])
 //  myfs_makefs(SAMPLEDISK);
   myfs_mount(SAMPLEDISK);
 
-//  myfs_create(SAMPLEFILE);
-//  fd = myfs_open(SAMPLEFILE);
-//  myfs_write(fd, SAMPLETEXT, strlen(SAMPLETEXT));
-//  myfs_close(fd);
+  fd = myfs_create(SAMPLEFILE);
+  myfs_truncate(fd, 0);
+  myfs_write(fd, SAMPLETEXT, strlen(SAMPLETEXT));
+  myfs_close(fd);
+
+  myfs_umount();
+  myfs_mount(SAMPLEDISK);
 
   /* As an exercise, read the file from another program */
   fd = myfs_open(SAMPLEFILE);
