@@ -15,7 +15,7 @@ struct opentable {
 		int offset;
 		BLOCKTYPE curr;  // current block
 	} entries[MAXOPENFILES];
-	int counts[MAXFILECOUNT]; // no of open instances of each file
+	int counts[MAXFILECOUNT]; // no of open instances of each file // can be kept in shared memory, with rest in process address space
 	int filenum; // no of open files
 	int minfree; // smallest free index in table, -1 if full, may be updated after opening or closing files
 };

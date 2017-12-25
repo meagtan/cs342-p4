@@ -132,7 +132,7 @@ int putblock (int blocknum, void *buf)
 
 int myfs_diskcreate (char *vdisk)
 {
-	int fd, i;
+	int i;
 	char buf[BLOCKSIZE];
 
 	// create new file with size DISKSIZE
@@ -143,15 +143,20 @@ int myfs_diskcreate (char *vdisk)
 
 	// fill disk with zeros (not actually necessary for formatting)
 	bzero(buf, BLOCKSIZE);
-	fd = open(vdisk, O_RDWR);
-	for (i = 0; i < DISKSIZE / BLOCKSIZE; ++i) {
-		if (write(fd, buf, BLOCKSIZE) != BLOCKSIZE) {
-			close(fd);
+
+	// set for putblock
+	disk_fd = open(vdisk, O_RDWR);
+	disk_size = DISKSIZE;
+	disk_blockcount = disk_size / BLOCKSIZE;
+
+	for (i = 0; i < disk_blockcount; ++i) {
+		if (putblock(i, buf)) {
+			close(disk_fd);
 			return -1;
 		}
 	}
-	close(fd);
 
+	close(disk_fd);
 	return 0;
 }
 
@@ -246,7 +251,7 @@ int myfs_mount (char *vdisk)
 	sprintf(shm_name, "myfs_%s", disk_name);
 	shm_fd = shm_open(shm_name, O_RDWR | O_CREAT, 0666);
 	ftruncate(shm_fd, shm_size);
-	// printf("using shared memory\n");
+	printf("using shared memory\n");
 
 	// read directory, assuming its size is a little over 1 block
 	dir = mmap(0, sizeof(struct dir), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
@@ -357,11 +362,14 @@ int myfs_umount()
 int myfs_create(char *filename)
 {
 	// retrieve new FCB
-	int inum = dir_add(dir, filename);
+	/* int inum = */ dir_add(dir, filename);
+	/*
 	if (inum == -1) // file already exists
-		return myfs_open(filename); // */ -1;
+		return -1;
 	// printf("created file %s with fd %d\n", filename, inum);
-	return myfs_open(filename); // */ 0;
+	return 0;
+	*/
+	return myfs_open(filename);
 }
 
 
@@ -601,24 +609,25 @@ int myfs_seek(int fd, int offset)
 	int position = -1;
 
 	// traverse fat
-	// compare offset with size
 	struct open_entry *entry = open_get(opentable, fd);
 	if (entry == NULL)
 		return position;
 
-	if (offset > entry->inode->size)
-		offset = entry->inode->size;
+	// compare offset with size
+	position = offset;
+	if (position > entry->inode->size)
+		position = entry->inode->size;
 
 	// start from beginning of file
 	// entry->offset = 0;
 	entry->curr = entry->inode->start;
 
 	// skip blocks before last one
-	for (int i = 0; i < offset / BLOCKSIZE; ++i) {
+	for (int i = 0; i < position / BLOCKSIZE; ++i) {
 		// entry->offset += BLOCKSIZE;
 		entry->curr = fat_getnext(entry->curr);
 	}
-	entry->offset = offset; // % BLOCKSIZE;
+	entry->offset = position; // % BLOCKSIZE;
 
 	return (position);
 }

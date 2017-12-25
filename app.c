@@ -56,6 +56,7 @@ int main(int argc, char *argv[])
 
 		// write siz bytes to each file
 		for (j = 0; j < 16; ++j) {
+			// fprintf(stderr, "seek\t%d\t%d\n", j, myfs_seek(fd[j], siz));
 			diff = 0;
 			for (k = 0; k < siz / MAXREADWRITE; ++k) {
 				MEASURE(myfs_write(fd[j], buf, MAXREADWRITE) == MAXREADWRITE);
@@ -87,6 +88,8 @@ int main(int argc, char *argv[])
 			}
 			MEASURE(myfs_read(fd[j], buf, siz % MAXREADWRITE) == siz % MAXREADWRITE);
 			fprintf(stderr, "read\t%d\t%d\t%ld\n", j, myfs_filesize(fd[j]), diff);
+			// myfs_truncate(fd[j], siz);
+			// fprintf(stderr, "truncate\t%d\t%d\n", j, myfs_filesize(fd[j]));
 		}
 
 		// close each file
