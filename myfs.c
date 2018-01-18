@@ -6,7 +6,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/shm.h>
-#include <sys/mman.h>
+#include <sys/stat.h>
+// #include <sys/mman.h> // uncomment this and compile with -lrt for concurrency
 
 #include "myfs.h"
 
@@ -59,7 +60,7 @@ struct superblock {
 } superblock;
 
 // shared memory
-// TODO using shm requires linking to another static library
+// using shm requires linking to another static library
 int shm_fd;
 size_t shm_size = 2*BLOCKSIZE + sizeof(struct opentable); // 2 blocks for dir, to make it align better
 char shm_name[133]; // myfs_diskname
@@ -152,11 +153,14 @@ int myfs_diskcreate (char *vdisk)
 	for (i = 0; i < disk_blockcount; ++i) {
 		if (putblock(i, buf)) {
 			close(disk_fd);
+			disk_fd = 0;
 			return -1;
 		}
 	}
 
 	close(disk_fd);
+	disk_fd = 0;
+
 	return 0;
 }
 
@@ -195,6 +199,7 @@ int myfs_makefs(char *vdisk)
 
 	fsync (disk_fd);
 	close (disk_fd);
+	disk_fd = 0;
 
 	return -(i < disk_blockcount / 4);
 }
@@ -247,11 +252,11 @@ int myfs_mount (char *vdisk)
 	// superblock elements guaranteed to be the same as global variables, not necessary
 
 	// initialize shared memory
-#ifdef shm_open
+#ifdef _SYS_MMAN_H
 	sprintf(shm_name, "myfs_%s", disk_name);
 	shm_fd = shm_open(shm_name, O_RDWR | O_CREAT, 0666);
 	ftruncate(shm_fd, shm_size);
-	printf("using shared memory\n");
+	// printf("using shared memory\n");
 
 	// read directory, assuming its size is a little over 1 block
 	dir = mmap(0, sizeof(struct dir), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
@@ -282,7 +287,7 @@ int myfs_mount (char *vdisk)
 	*/
 
 	// initialize open file table
-#ifdef shm_open
+#ifdef _SYS_MMAN_H
 	opentable = mmap(0, sizeof(struct opentable), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 2*BLOCKSIZE);
 	if (opentable == MAP_FAILED) {
 		// printf("mapping opentable failed\n");
@@ -327,7 +332,7 @@ int myfs_umount()
 		free(buf);
 		return -1;
 	}
-#ifndef shm_open
+#ifndef _SYS_MMAN_H
 	free(dir);
 #endif
 	free(buf);
@@ -342,7 +347,7 @@ int myfs_umount()
 	}
 	*/
 
-#ifdef shm_open
+#ifdef _SYS_MMAN_H
 	if (shm_unlink(shm_name)) {
 		// printf("unlink failed\n");
 		exit(1);
